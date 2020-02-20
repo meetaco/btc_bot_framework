@@ -25,4 +25,4 @@ class BitflyerTrade(TradeBase):
             if side == 'SELL':
                 size *= -1
             self.ltp = price
-            self._trigger_callback(ts, price, size)
+            self._trigger_callback(ts, price, size, t['buy_child_order_acceptance_id'], t['sell_child_order_acceptance_id'])
