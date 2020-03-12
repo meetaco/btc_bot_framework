@@ -1,66 +1,52 @@
-import json
-import traceback
-
 from ..base.websocket import WebsocketBase
 
 
 class BinanceWebsocket(WebsocketBase):
     ENDPOINT = 'wss://stream.binance.com:9443/ws'
 
-    def __init__(self, key=None, secret=None):
-        super().__init__(self.ENDPOINT)
-        self.__next_id = 1
-        self.__request_table = {}
-        self.__ch_cb_map = {}
+    def command(self, op, args=None, cb=None):
+        msg = {'method': op, 'id': self._request_id}
+        if args:
+            msg['params'] = args
+        self._request_table[self._request_id] = (msg, cb)
+        self._request_id += 1
 
-        if key and secret:
-            self.log.warning('key and secret are ignored.')
-
-    def command(self, op, args=[], cb=None):
-        id_ = self.__next_id
-        self.__next_id += 1
-        msg = {'method': op, 'params': args, 'id': id_}
         self.send(msg)
-        self.__request_table[id_] = (msg, cb)
-        return id_
 
-    def subscribe(self, ch, cb):
+    def _subscribe(self, ch):
         key = ch.split('@')
         if len(key) < 2:
             raise Exception('Event type is not specified')
-        self.command('SUBSCRIBE', [ch])
-
         symbol = key[0].upper()
         event = 'depthUpdate' if key[1] == 'depth' else key[1]
-        key = (symbol, event)
-        self.__ch_cb_map[(key[0].upper(), key[1])] = cb
-        return key
+        self._ch_cb[(symbol, event)] = self._ch_cb[ch]
 
-    def _on_message(self, msg):
-        try:
-            msg = json.loads(msg)
-            s = msg.get('s')
-            e = msg.get('e')
-            if e:
-                self.__ch_cb_map[(s, e)](msg)
+        self.command('SUBSCRIBE', [ch])
+
+    def _authenticate(self):
+        pass
+
+    def _handle_message(self, msg):
+        s = msg.get('s')
+        e = msg.get('e')
+        if e:
+            self._ch_cb[(s, e)](msg)
+        else:
+            self.log.debug(f'recv: {msg}')
+            if 'id' in msg:
+                req, cb = self._request_table[msg['id']]
+                if 'result' in msg:
+                    res = msg['result']
+                    self.log.info(f'{req} => {res}')
+                elif 'error' in msg:  # TODO
+                    err = msg['error']
+                    code, message = err.get('code'), err.get('message')
+                    self.log.error(f'{req} => {code}, {message}')
+
+                if cb:
+                    cb(msg)
             else:
-                self.log.debug(f'recv: {msg}')
-                if 'id' in msg:
-                    req, cb = self.__request_table[msg['id']]
-                    if 'result' in msg:
-                        res = msg['result']
-                        self.log.info(f'{req} => {res}')
-                    elif 'error' in msg:  # TODO
-                        err = msg['error']
-                        code, message = err.get('code'), err.get('message')
-                        self.log.error(f'{req} => {code}, {message}')
-
-                    if cb:
-                        cb(msg)
-                else:
-                    self.log.warning(f'Unknown message {msg}')
-        except Exception:
-            self.log.error(traceback.format_exc())
+                self.log.warning(f'Unknown message {msg}')
 
 
 class BinanceFutureWebsocket(BinanceWebsocket):
@@ -90,8 +76,7 @@ class BinanceWebsocketPrivate(WebsocketBase):
         super()._on_open()
         self._set_auth_result(True)
 
-    def _on_message(self, msg):
-        msg = json.loads(msg)
+    def _handle_message(self, msg):
         self._run_callbacks(self.__cb, msg)
 
 

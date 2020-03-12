@@ -8,17 +8,12 @@ from .api import BitflyerApi
 class BitflyerOrderbook(OrderbookBase):
     def __init__(self, symbol, ws=None):
         super().__init__()
-        self.symbol = symbol
-        market_id = BitflyerApi.ccxt_instance().market_id(symbol)
-
         self.ws = ws or BitflyerWebsocket()
-        self.ws.add_after_open_callback(self.__after_open)
+        self.symbol = symbol
 
+        market_id = BitflyerApi.ccxt_instance().market_id(symbol)
         self.ch_snapshot = f'lightning_board_snapshot_{market_id}'
         self.ch_update = f'lightning_board_{market_id}'
-
-    def __after_open(self):
-        self.init()
         self.ws.subscribe(self.ch_snapshot, self.__on_message)
         self.ws.subscribe(self.ch_update, self.__on_message)
 
@@ -39,7 +34,7 @@ class BitflyerOrderbook(OrderbookBase):
 
     def __update(self, sd, d, sign):
         for i in d:
-            p, s = int(i['price']), i['size']
+            p, s = float(i['price']), i['size']
             if s == 0:
                 sd.pop(p * sign, None)
             else:

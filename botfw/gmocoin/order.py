@@ -10,9 +10,7 @@ class GmocoinOrderManager(od.OrderManagerBase):
     def __init__(self, api, ws=None, retention=60):
         wspr = self.WebsocketPrivate(api)  # ws is unused
         super().__init__(api, wspr, retention)
-
-    def _after_auth(self):
-        self.ws.subscribe({'channel': 'executionEvents'}, self.__on_events)
+        self.ws.subscribe(('executionEvents', None), self.__on_events)
 
     def _generate_order_object(self, e):
         info = e.info
@@ -32,19 +30,12 @@ class GmocoinOrderManager(od.OrderManagerBase):
         oe.price = float(e['executionPrice'])
         size = float(e['executionSize'])
         oe.size = -size if e['side'] == 'SELL' else size
+        oe.fee = 0  # TODO
         self._handle_order_event(oe)
 
 
 class GmocoinPositionGroup(od.PositionGroupBase):
-    def __init__(self):
-        super().__init__()
-        # self.commission = 0  # total commissions in USD
-
-    def update(self, price, size, info):
-        super().update(price, size)
-        # commission = info['commission'] * abs(size)
-        # self.commission += commission
-        # self.pnl -= commission
+    pass
 
 
 class GmocoinOrderGroup(od.OrderGroupBase):

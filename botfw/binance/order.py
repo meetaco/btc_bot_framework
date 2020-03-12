@@ -12,9 +12,6 @@ class BinanceOrderManager(od.OrderManagerBase):
         wsud.add_callback(self.__on_events)
         super().__init__(api, wsud, retention)
 
-    def _after_auth(self):
-        pass  # do nothing
-
     def _generate_order_object(self, e):
         o = e.info['o']
         api = BinanceApi.ccxt_instance()
@@ -41,6 +38,7 @@ class BinanceOrderManager(od.OrderManagerBase):
                 oe.type = od.EVENT_EXECUTION
                 oe.price = float(o['L'])
                 oe.size = -size if o['S'] == 'SELL' else size
+                oe.fee = float(e['o'].get('n') or 0)
             elif t == 'NEW':
                 oe.type = od.EVENT_OPEN
             elif t == 'PARTIAL_FILL':
@@ -70,15 +68,7 @@ class BinanceOrderManager(od.OrderManagerBase):
 
 
 class BinancePositionGroup(od.PositionGroupBase):
-    def __init__(self):
-        super().__init__()
-        self.commission = 0  # total commissions in USD
-
-    def update(self, price, size, info):
-        super().update(price, size)
-        commission = float(info['o'].get('n') or 0)
-        self.commission += commission
-        self.pnl -= commission
+    pass
 
 
 class BinanceOrderGroup(od.OrderGroupBase):

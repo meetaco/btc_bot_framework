@@ -4,8 +4,9 @@ from ..etc.util import unix_time_from_ISO8601Z
 
 
 class BitmexOrderManager(od.OrderManagerBase):
-    def _after_auth(self):
-        self.ws.subscribe('execution', self.__on_events)
+    def __init__(self, api, ws=None, retention=60):
+        super().__init__(api, ws, retention)
+        self.ws.subscribe('execution', self.__on_events, True)
 
     def _generate_order_object(self, e):
         info = e.info
@@ -31,6 +32,7 @@ class BitmexOrderManager(od.OrderManagerBase):
                 oe.type = od.EVENT_EXECUTION
                 oe.price = e['lastPx']
                 oe.size = -size if e['side'] == 'Sell' else size
+                oe.fee = e['commission'] * size
             elif t == 'New':
                 oe.type = od.EVENT_OPEN
             elif t == 'Filled':
@@ -43,16 +45,6 @@ class BitmexOrderManager(od.OrderManagerBase):
 
 class BitmexPositionGroup(od.PositionGroupBase):
     SIZE_IN_QUOTE = True
-
-    def __init__(self):
-        super().__init__()
-        self.commission = 0  # total commissions in USD
-
-    def update(self, price, size, info):
-        super().update(price, size)
-        commission = info['commission'] * abs(size)
-        self.commission += commission
-        self.pnl -= commission
 
 
 class BitmexOrderGroup(od.OrderGroupBase):
