@@ -44,6 +44,6 @@ class TradeBase:
     def remove_callback(self, cb):
         self.cb.remove(cb)
 
-    def _trigger_callback(self, ts, price, size, buy_id, sell_id):
+    def _trigger_callback(self, ts, price, size, buy_id=None, sell_id=None):
         for cb in self.cb:
             cb(ts, price, size, buy_id, sell_id)
