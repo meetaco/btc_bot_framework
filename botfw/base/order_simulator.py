@@ -111,7 +111,7 @@ class SymbolSimulator:
                 o.id, ts, od.EVENT_EXECUTION, price, size, fee, info=info))
         return executed
 
-    def trade_callback(self, ts, price, size):
+    def trade_callback(self, ts, price, size, buy_id, sell_id):
         size = self.to_execute_size(price, size)
         closed = []
         now = time.time()
