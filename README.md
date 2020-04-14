@@ -38,6 +38,7 @@ Pythonによる暗号通貨の高頻度取引bot向けフレームワークで�
 * ccxt>=1.20.44
 * websocket-client>=0.48
 * sortedcontainers
+* beautifulsoup4 (オプション) – bitflyer web注文
 
 ## インストールと使い方
 [wiki](https://github.com/penta2019/btc_bot_framework/wiki)をご覧ください。
