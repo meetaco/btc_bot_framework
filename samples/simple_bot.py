@@ -6,7 +6,7 @@ import traceback
 import botfw as fw
 
 # ==================== このセクションを書き換えてください ====================
-account = json.loads(open('account/key_secret.json').read())
+account = json.loads(open('account/key_secret.json').read())  # ここはコメントアウト
 ccxt_config = {
     'apiKey': account['key'],     # YOUR_API_KEY
     'secret': account['secret'],  # YOUR_API_SECRET
@@ -46,7 +46,7 @@ log = logging.getLogger()
 # simulate=Trueにすると実際には注文を出さずにリアルタイムシミュレーションを行う
 # シミュレーションの場合はccxt_configの'apiKey'と'secret'はNoneでOK
 ex = exchange(simulate=False)
-ex.create_basics(ccxt_config)
+ex.init_account(ccxt_config)
 api = ex.api
 ws = ex.websocket
 om = ex.order_manager
