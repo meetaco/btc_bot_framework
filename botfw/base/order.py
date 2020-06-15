@@ -1,9 +1,9 @@
-import asyncio
 import time
 import logging
 import collections
 import threading
 import traceback
+import concurrent.futures
 
 from ..etc.util import decimal_add, run_forever_nonblocking, Timer
 
@@ -86,22 +86,18 @@ class OrderManagerBase:
         self.api = api  # Api object
         self.ws = ws  # Websocket class (with auth)
         self.retention = retention  # retantion time of closed(canceled) order
+        self.timeout = 30
 
         self.last_update_ts = 0
         self.orders = {}  # {id: Order}
         self.pending_orders = []
 
-        self.__closed_orders = collections.deque()
-        self.__event_queue = collections.deque()
+        self.__zombie_orders = collections.deque()  # [(ts, Order)]
+        self.__closed_orders = collections.deque()  # [Order]
+        self.__event_queue = collections.deque()  # [OrderEvent]
         self.__check_timer = Timer(60)  # timer for check_open_orders
         self.__last_check_tss = {}  # {symbol: last_check_open_orders_ts}
-
-        # for asynchronous create_order(), cancel_order()
-        self.__loop = asyncio.new_event_loop()
-        self.__thread = threading.Thread(
-            name='event_loop', target=self.__loop.run_forever)
-        self.__thread.daemon = True
-        self.__thread.start()
+        self.__executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
 
         run_forever_nonblocking(self.__worker, self.log, 1)
 
@@ -131,20 +127,23 @@ class OrderManagerBase:
             o.event_cb = event_cb
             self.pending_orders.append(o)
 
-            f = self.__loop.run_in_executor(
-                None, self.api.create_order,
+            f = self.__executor.submit(
+                self.api.create_order,
                 symbol, type_, side, amount, price, params)
             f.add_done_callback(
                 lambda f: self.__handle_create_order(o, log, f))
         return o
 
     def cancel_order(self, o, log=None, sync=False):
+        elog = log or self.log
+
         if not o.id:
-            if o.state == WAIT_OPEN and time.time() - o.state_ts < 10:
-                self.log.error('cancel failed: order has not accepted yet')
+            if o.state == WAIT_OPEN \
+                    and time.time() - o.state_ts < self.timeout:
+                elog.error('cancel failed: order has not accepted yet')
             else:
                 o.state = CANCELED
-                self.log.error('cancel failed: invalid order')
+                elog.error('cancel failed: invalid order')
             return
 
         if o.state in [OPEN, WAIT_OPEN]:
@@ -153,19 +152,20 @@ class OrderManagerBase:
         if sync:
             try:
                 self.api.cancel_order(o.id, o.symbol)
+            except Exception as e:
+                o.state, o.state_ts = CANCELED, time.time()
+                elog.error(f'{type(e).__name__}: {e}')
             finally:
                 if log:
                     log.info(f'cancel order: {o.id}')
         else:
-            f = self.__loop.run_in_executor(
-                None, self.api.cancel_order,
-                o.id, o.symbol)
+            f = self.__executor.submit(self.api.cancel_order, o.id, o.symbol)
             f.add_done_callback(
                 lambda f: self.__handle_cancel_order(o, log, f))
 
         if o.id not in self.orders and o not in self.pending_orders:
             o.state = CANCELED
-            self.log.error(f'cancel failed: Order {o.id} is not in order list')
+            elog.error(f'cancel failed: Order {o.id} is not in order list')
 
     def edit_order(self, o, amount=None, price=None, log=None, sync=False):
         o.editing = True
@@ -185,8 +185,8 @@ class OrderManagerBase:
                         f'edit order: {o.symbol} {o.type} {o.side} '
                         f'{o.amount} {o.price} {o.params} => {o.id}')
         else:
-            f = self.__loop.run_in_executor(
-                None, self.api.edit_order,
+            f = self.__executor.submit(
+                self.api.edit_order,
                 o.id, o.symbol, o.type, o.side,
                 amount or o.amount, price or o.price)
             f.add_done_callback(
@@ -196,8 +196,7 @@ class OrderManagerBase:
     def cancel_external_orders(self, symbol):
         for o in self.orders.values():
             if o.external and o.symbol == symbol and o.state == OPEN:
-                self.log.warning(
-                    f'cancel external order: {o.id}')
+                self.log.warning(f'cancel external order: {o.id}')
                 self.cancel_order(o)
 
     def _handle_order_event(self, e):
@@ -220,7 +219,8 @@ class OrderManagerBase:
         if t == EVENT_EXECUTION:
             o.filled, o.trade_ts = decimal_add(o.filled, abs(e.size)), now
             if o.state in [CLOSED, CANCELED]:
-                self.log.warning('got an execution for a closed order')
+                self.log.warning(
+                    f'got an execution for a closed order: {e.id}')
             if o.state == WAIT_OPEN:
                 o.state, o.open_ts = OPEN, e.ts
         elif t == EVENT_OPEN:
@@ -230,11 +230,11 @@ class OrderManagerBase:
             o.state, o.close_ts = CANCELED, e.ts
         elif t == EVENT_OPEN_FAILED:
             o.state = CANCELED
-            self.log.warning('failed to create order')
+            self.log.warning(f'failed to create order: {e.id}')
         elif t == EVENT_CANCEL_FAILED:
             if o.state == WAIT_CANCEL:
                 o.state = OPEN
-            self.log.warning('failed to cancel order')
+            self.log.warning(f'failed to cancel order: {e.id}')
         elif t == EVENT_CLOSE:
             o.state, o.close_ts = CLOSED, e.ts
         elif t == EVENT_ERROR:
@@ -245,10 +245,11 @@ class OrderManagerBase:
         if o.filled >= o.amount and not o.editing:
             o.state, o.close_ts = CLOSED, e.ts
             if o.filled > o.amount:
-                self.log.error('Filled size is larger than order amount')
+                self.log.error(
+                    f'Filled size is larger than order amount: {e.id}')
 
         if e.message and t != EVENT_ERROR:
-            self.log.warn(e.message)
+            self.log.warning(f'{e.message}: {e.id}')
 
         if o.state != st:
             o.state_ts = now
@@ -279,9 +280,23 @@ class OrderManagerBase:
             self.__update_order(o, e)
 
     def __remove_closed_orders(self):
+        now = time.time()
+
+        while self.__zombie_orders:
+            ts, o = self.__zombie_orders[0]
+            if now - ts > self.timeout:
+                self.__zombie_orders.popleft()
+                if o.state not in [CLOSED, CANCELED]:
+                    self.log.warning(
+                        f'order "{o.id}" is already closed or canceled.')
+                    o.state, o.state_ts = CANCELED, now
+                    self.__closed_orders.append(o)
+            else:
+                break
+
         while self.__closed_orders:
             o = self.__closed_orders[0]
-            if time.time() - o.state_ts > self.retention:
+            if now - o.state_ts > self.retention:
                 self.__closed_orders.popleft()
                 if o.state in [CLOSED, CANCELED]:
                     self.orders.pop(o.id, None)
@@ -304,38 +319,27 @@ class OrderManagerBase:
         for o in rm_orders:
             del self.orders[o.id]
 
-        # check if there are 'open' orders which are already closed
-        # find orders whose state_ts is more than retention time ago
-        orders = []
-        for o in self.orders.values():
-            if o.state not in [CLOSED, CANCELED] \
-                    and now - o.state_ts > self.retention:
-                orders.append(o)
+        # find open orders
+        open_orders = [o for o in self.orders.values()
+                       if o.state not in [CLOSED, CANCELED]]
 
-        if not orders:
+        if not open_orders:
             return
 
-        # find the symbol with the oldest check timestamp
+        # find a symbol with the oldest check timestamp
         oldest_ts, symbol = now, None
-        for o in orders:
+        for o in open_orders:
             ts = self.__last_check_tss.get(o.symbol, 0)
             if ts < oldest_ts:
                 oldest_ts, symbol = ts, o.symbol
         self.__last_check_tss[symbol] = now
 
-        # set actually closed(or canceled) orders state as 'canceled'
-        self.log.debug(f'check if open orders for {symbol} are still alive')
-        open_orders = self.api.fetch_open_orders(symbol)
-        ids = [o['id'] for o in open_orders]
-        for o in orders:
-            if o.symbol != symbol:
-                continue
-
-            if o.id not in ids:
-                self.log.warning(
-                    f'order "{o.id}" is already closed or canceled.')
-                o.state, o.state_ts = CANCELED, now
-                self.__closed_orders.append(o)
+        # find zombie orders('open' state, but actually closed)
+        ids = [o['id'] for o in self.api.fetch_open_orders(symbol)]
+        for o in open_orders:
+            if o.symbol == symbol and o.id not in ids:
+                self.log.debug(f'found a zombie order: {o.id}')
+                self.__zombie_orders.append((now, o))
 
     def __handle_create_order(self, o, log, f):
         try:
@@ -344,8 +348,7 @@ class OrderManagerBase:
             self.orders[o.id] = o
         except Exception as e:
             o.state, o.state_ts = CANCELED, time.time()
-            elog = log or self.log
-            elog.error(f'{type(e).__name__}: {e}')
+            (log or self.log).error(f'{type(e).__name__}: {e}')
         finally:
             self.pending_orders.remove(o)
             if log:
@@ -354,27 +357,23 @@ class OrderManagerBase:
                     f'{o.amount} {o.price} {o.params} => {o.id}')
 
     def __handle_cancel_order(self, o, log, f):
-        log = log or self.log
         try:
             f.result()
         except Exception as e:
             if o.state == WAIT_CANCEL:
                 o.state, o.state_ts = OPEN, time.time()
-            elog = log or self.log
-            elog.error(f'{type(e).__name__}: {e}')
+            (log or self.log).error(f'{type(e).__name__}: {e}')
         finally:
             if log:
                 log.info(f'cancel order: {o.id}')
 
     def __handle_edit_order(self, o, log, f):
-        log = log or self.log
         try:
             res = f.result()
             o.price = res['price']
             o.amount = res['amount']
         except Exception as e:
-            elog = log or self.log
-            elog.error(f'{type(e).__name__}: {e}')
+            (log or self.log).error(f'{type(e).__name__}: {e}')
         finally:
             o.editing = False
             if o.filled >= o.amount:
