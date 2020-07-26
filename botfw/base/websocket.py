@@ -3,14 +3,22 @@ import logging
 import json
 import traceback
 import threading
+import asyncio
 
-import websocket
+import websockets
 
-from ..etc.util import run_forever_nonblocking, StopRunForever
+
+def new_event_loop(name):
+    loop = asyncio.new_event_loop()
+    threading.Thread(
+        target=lambda: loop.run_forever(),
+        daemon=True, name=name).start()
+    return loop
 
 
 class WebsocketBase:
-    ENDPOINT = None
+    ENDPOINT = ''
+    _loop = new_event_loop('WebsocketBase_asyncio')
 
     def __init__(self, key=None, secret=None):
         self.log = logging.getLogger(self.__class__.__name__)
@@ -19,12 +27,11 @@ class WebsocketBase:
         self.key = key
         self.secret = secret
 
-        self.ws = None
         self.running = True
-
         self.is_open = False
         self.is_auth = None  # None: before auth, True: success, False: failed
 
+        self._ws = None
         self._request_id = 1  # next request id
         self._request_table = {}
         self._ch_cb = {}
@@ -36,11 +43,11 @@ class WebsocketBase:
         if self.key and self.secret:
             self.add_after_open_callback(self._authenticate)
 
-        run_forever_nonblocking(self.__worker, self.log, 3)
+        asyncio.run_coroutine_threadsafe(self.__worker(), WebsocketBase._loop)
 
     def stop(self):
         self.running = False
-        self.ws.close()
+        asyncio.run_coroutine_threadsafe(self._ws.close(), WebsocketBase._loop)
 
     def add_after_open_callback(self, cb):
         with self.__lock:
@@ -76,8 +83,14 @@ class WebsocketBase:
                 raise Exception('Auth failed')
             time.sleep(0.1)
 
+    def send_raw(self, msg):
+        asyncio.run_coroutine_threadsafe(
+            self._ws.send(msg), WebsocketBase._loop)
+        self.log.debug(f'send_raw: {msg}')
+
     def send(self, msg):
-        self.ws.send(json.dumps(msg))
+        asyncio.run_coroutine_threadsafe(
+            self._ws.send(json.dumps(msg)), WebsocketBase._loop)
         self.log.debug(f'send: {msg}')
 
     def subscribe(self, ch, cb, auth=False):
@@ -96,7 +109,8 @@ class WebsocketBase:
         else:
             self.log.error('authentication failed')
             self.is_auth = False
-            self.ws.close()
+            asyncio.run_coroutine_threadsafe(
+                self._ws.close(), WebsocketBase._loop)
 
     def _run_callbacks(self, cbs, *args):
         for cb in cbs:
@@ -118,7 +132,7 @@ class WebsocketBase:
         pass
 
     def _on_open(self):
-        self.log.info('open websocket')
+        self.log.info(f'open websocket: {self.url}')
         self._next_id = 1
         self._request_table = {}
         with self.__lock:
@@ -140,16 +154,28 @@ class WebsocketBase:
     def _on_error(self, err):
         self.log.error(f'recv: {err}')
 
-    def __worker(self):
-        self._on_init()
-        self.log.debug(f'create websocket: url={self.url}')
-        self.ws = websocket.WebSocketApp(
-            self.url,
-            on_open=self._on_open,
-            on_close=self._on_close,
-            on_message=self._on_message,
-            on_error=self._on_error)
-        self.ws.run_forever(ping_interval=60)
+    async def __worker(self):
+        while True:
+            try:
+                self._on_init()
 
-        if not self.running:
-            raise StopRunForever
+                async with websockets.connect(self.url) as ws:
+                    self._ws = ws
+                    self._on_open()
+                    while True:
+                        try:
+                            msg = await ws.recv()
+                            self._on_message(msg)
+                        except websockets.ConnectionClosed:
+                            break
+                        except Exception as e:
+                            self._on_error(e)
+
+                self._on_close()
+            except Exception:
+                self.log.error(traceback.format_exc())
+
+            self._ws = None
+            if not self.running:
+                break
+            await asyncio.sleep(5)
