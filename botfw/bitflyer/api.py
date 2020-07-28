@@ -77,4 +77,8 @@ class RateLimitManager():
         stat['private'] = f"{len([x for x in elements if x['private']])}/500 per 5m"
         stat['order'] = f"{len([x for x in elements if x['order']])}/300 per 5m"
         stat['small'] = f"{len([x for x in self.time_queue.get_elements(60) if x['small']])}/100 per 1m"
-        return str(stat)
+        return stat
+
+    def ip(self):
+        return len([x for x in self.time_queue.get_elements() if x['ip']])
+
