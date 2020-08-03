@@ -9,7 +9,7 @@ class BitflyerApi(ApiBase, ccxt.bitflyer):
     def __init__(self, ccxt_config={}):
         ApiBase.__init__(self)
         ccxt.bitflyer.__init__(self, ccxt_config)
-        self.rate_limit_manager = RateLimitManager()
+        self.rate_limit_manager = RateLimitManager(self)
         self.load_markets()
 
         # silence linter
@@ -51,18 +51,47 @@ class BitflyerApi(ApiBase, ccxt.bitflyer):
 
     def request(self, path, api='public', method='GET', params={},
                 headers=None, body=None):
-        self.rate_limit_manager.add(path, api, params)
-        return super().request(path, api, method, params, headers, body)
+        res = super().request(path, api, method, params, headers, body)
+        self.rate_limit_manager.update(path, api, params)
+        return res
 
 
 class RateLimitManager():
-    def __init__(self):
+    def __init__(self, api):
+        self.api = api
         # import inside class due to:
         # https://qiita.com/puriketu99/items/a1347bf5200f095e486e
         from botutil.utils import TimeQueue
         self.time_queue = TimeQueue(5 * 60)
 
-    def add(self, path, api, params):
+        # rate limit info from response header
+        # period: second to reset
+        # remaining: how many times you can call till reset
+        # reset: unixtime the moment reset occurs
+        self.ip_period = None
+        self.ip_remaining = None
+        self.ip_reset = None
+        self.order_period = None
+        self.order_remaining = None
+        self.order_reset = None
+
+    def read_header(self):
+        h = self.api.last_response_headers
+        if 'X-RateLimit-Period' in h:
+            self.ip_period = int(h['X-RateLimit-Period'])
+        if 'X-RateLimit-Remaining' in h:
+            self.ip_remaining = int(h['X-RateLimit-Remaining'])
+        if 'X-RateLimit-Reset' in h:
+            self.ip_reset = int(h['X-RateLimit-Reset'])
+        if 'X-OrderRequest-RateLimit-Period' in h:
+            self.order_period = int(h['X-OrderRequest-RateLimit-Period'])
+        if 'X-OrderRequest-RateLimit-Remaining' in h:
+            self.order_remaining = int(h['X-OrderRequest-RateLimit-Remaining'])
+        if 'X-OrderRequest-RateLimit-Reset' in h:
+            self.order_reset = int(h['X-OrderRequest-RateLimit-Reset'])
+
+    def update(self, path, api, params):
+        self.read_header()
         call = {}
         call['ip'] = True
         call['private'] = api == 'private'
