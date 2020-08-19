@@ -49,9 +49,9 @@ class BitflyerApi(ApiBase, ccxt.bitflyer):
         return self.private_post_cancelallchildorders(
             {'product_code': market_id})
 
-    def request(self, path, api='public', method='GET', params={},
+    def fetch2(self, path, api='public', method='GET', params={},
                 headers=None, body=None):
-        res = super().request(path, api, method, params, headers, body)
+        res = super().fetch2(path, api, method, params, headers, body)
         self.rate_limit_manager.update(path, api, params)
         return res
 
