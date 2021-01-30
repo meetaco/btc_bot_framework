@@ -17,6 +17,7 @@ from .binance.exchange import Binance, BinanceFuture        # noqa: F401
 from .bybit.exchange import Bybit, BybitUsdt                # noqa: F401
 from .gmocoin.exchange import Gmocoin                       # noqa: F401
 from .liquid.exchange import Liquid                         # noqa: F401
+from .ftx.exchange import Ftx                               # noqa: F401
 
 from .etc.util import setup_logger                          # noqa: F401
 from .etc.cmd import Cmd, CmdClient, CmdServer              # noqa: F401

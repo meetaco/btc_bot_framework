@@ -13,6 +13,7 @@ no_traceback_exceptions = (ccxt.NetworkError)
 
 
 def unix_time_from_ISO8601Z(date):
+    date = date.replace('+00:00', 'Z')
     td = datetime.datetime.strptime(date[:19], '%Y-%m-%dT%H:%M:%S')
     td = td.replace(tzinfo=datetime.timezone.utc)
     ts = td.timestamp()
